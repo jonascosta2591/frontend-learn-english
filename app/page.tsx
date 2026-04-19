@@ -3,6 +3,9 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 import FlashcardModal from "./components/FlashcardModal";
+import TextRenderer from "./components/TextRenderer";
+import { useTTS } from "./hooks/useTTS";
+import { useAuth } from "./context/AuthContext";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001/api";
 
@@ -21,6 +24,7 @@ interface WordTooltip {
   translation: string;
   phonetic?: string;
   partOfSpeech?: string;
+  expression?: string | null;
   loading: boolean;
   saved: boolean;
   saving: boolean;
@@ -83,6 +87,8 @@ function DiffText({ original, corrected }: { original: string; corrected: string
 }
 
 export default function Home() {
+  const { speak } = useTTS();
+  const { authFetch } = useAuth();
   const [text, setText] = useState("");
   const [topic, setTopic] = useState("");
   const [loadingText, setLoadingText] = useState(false);
@@ -99,18 +105,46 @@ export default function Home() {
   const [cefrLevel, setCefrLevel] = useState<CEFRLevel>("B1");
   const [tooltip, setTooltip] = useState<WordTooltip | null>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
-  const translationCache = useRef<Record<string, { translation: string; phonetic?: string; partOfSpeech?: string }>>({});
+  const translationCache = useRef<Record<string, { translation: string; phonetic?: string; partOfSpeech?: string; expression?: string | null }>>({});
   const [showFlashcards, setShowFlashcards] = useState(false);
   const [dueCount, setDueCount] = useState(0);
 
+  type TopicMode = "random" | "category" | "custom";
+  const [topicMode, setTopicMode] = useState<TopicMode>("random");
+  const [selectedCategory, setSelectedCategory] = useState("programming");
+  const [customTopicInput, setCustomTopicInput] = useState("");
+
+  const topicModeRef = useRef<TopicMode>("random");
+  const selectedCategoryRef = useRef("programming");
+  const customTopicInputRef = useRef("");
+
+  const categories = [
+    { value: "programming", label: "Programming" },
+    { value: "typescript", label: "TypeScript" },
+    { value: "react", label: "React.js" },
+    { value: "nodejs", label: "Node.js" },
+    { value: "python", label: "Python" },
+    { value: "java", label: "Java" },
+    { value: "git", label: "Git" },
+    { value: "github", label: "GitHub" },
+    { value: "technology", label: "Technology" },
+  ];
+
   const fetchText = useCallback(async (level?: CEFRLevel) => {
+    const mode = topicModeRef.current;
+    const category = selectedCategoryRef.current;
+    const customTopic = customTopicInputRef.current;
+
     setLoadingText(true);
     setResult(null);
     setExplanation("");
     setShowXPAnim(false);
     setTooltip(null);
     try {
-      const res = await fetch(`${API}/text?level=${level ?? cefrLevel}`);
+      let url = `${API}/text?level=${level ?? cefrLevel}`;
+      if (mode === "category") url += `&category=${category}`;
+      if (mode === "custom" && customTopic.trim()) url += `&customTopic=${encodeURIComponent(customTopic.trim())}`;
+      const res = await fetch(url);
       const data = await res.json();
       setText(data.text);
       setTopic(data.topic);
@@ -121,21 +155,21 @@ export default function Home() {
     }
   }, [cefrLevel]);
 
-  useEffect(() => { fetchText(); }, [fetchText]);
+  useEffect(() => { fetchText(); }, []);  // only on mount
 
   // Load XP from DB on mount
   useEffect(() => {
-    fetch(`${API}/xp`).then(r => r.json()).then(d => {
+    authFetch(`${API}/xp`).then(r => r.json()).then(d => {
       setTotalXP(d.xp);
     }).catch(() => {});
-  }, []);
+  }, [authFetch]);
 
   // Fetch due flashcard count periodically
   const fetchDueCount = useCallback(() => {
-    fetch(`${API}/words/due`).then(r => r.json()).then((words: unknown[]) => {
+    authFetch(`${API}/words/due`).then(r => r.json()).then((words: unknown[]) => {
       setDueCount(words.length);
     }).catch(() => {});
-  }, []);
+  }, [authFetch]);
 
   useEffect(() => {
     fetchDueCount();
@@ -154,7 +188,7 @@ export default function Home() {
     if (!explanation.trim() || explanation.trim().length < 10) return;
     setEvaluating(true);
     try {
-      const res = await fetch(`${API}/evaluate`, {
+      const res = await authFetch(`${API}/evaluate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ originalText: text, userExplanation: explanation }),
@@ -168,7 +202,7 @@ export default function Home() {
         setShowXPAnim(true);
         setTotalXP((prev) => prev + data.xp);
         // Persist XP to DB
-        fetch(`${API}/xp/add`, {
+        authFetch(`${API}/xp/add`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ amount: data.xp }),
@@ -202,11 +236,13 @@ export default function Home() {
 
     setTooltip({ word: clean, translation: "", loading: true, saved: false, saving: false, x, y });
 
+    speak(clean); // play audio immediately on click
+
     try {
-      const res = await fetch(`${API}/translate`, {
+      const res = await authFetch(`${API}/translate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ word: clean, save: false }),
+        body: JSON.stringify({ word: clean, save: false, context: text }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
@@ -214,6 +250,7 @@ export default function Home() {
         translation: data.translation,
         phonetic: data.phonetic,
         partOfSpeech: data.partOfSpeech,
+        expression: data.expression ?? null,
       };
       setTooltip({ word: clean, ...translationCache.current[clean], loading: false, saved: false, saving: false, x, y });
     } catch (err) {
@@ -226,7 +263,7 @@ export default function Home() {
     if (!tooltip || tooltip.saved || tooltip.saving || tooltip.loading) return;
     setTooltip(t => t ? { ...t, saving: true } : t);
     try {
-      await fetch(`${API}/translate`, {
+      await authFetch(`${API}/translate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ word: tooltip.word, save: true }),
@@ -249,12 +286,12 @@ export default function Home() {
   }, []);
 
   const handleFlashcardXP = useCallback((amount: number) => {
-    fetch(`${API}/xp/add`, {
+    authFetch(`${API}/xp/add`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ amount }),
     }).then(r => r.json()).then(d => setTotalXP(d.xp)).catch(() => {});
-  }, []);
+  }, [authFetch]);
 
   const progressPercent = (xpInLevel / XP_MAX) * 100;
 
@@ -288,6 +325,12 @@ export default function Home() {
               )}
             </button>
             <Link
+              href="/practice-coding"
+              className="flex items-center gap-2 bg-white/5 hover:bg-white/10 border border-white/10 hover:border-cyan-500/40 text-gray-300 hover:text-white px-3 py-2 rounded-xl transition-all text-sm font-semibold"
+            >
+              💻 Practice
+            </Link>
+            {/* <Link
               href="/practice"
               className="flex items-center gap-2 bg-white/5 hover:bg-white/10 border border-white/10 hover:border-cyan-500/40 text-gray-300 hover:text-white px-3 py-2 rounded-xl transition-all text-sm font-semibold"
             >
@@ -311,6 +354,12 @@ export default function Home() {
             >
               🎮 Match
             </Link>
+            <Link
+              href="/speak"
+              className="flex items-center gap-2 bg-white/5 hover:bg-white/10 border border-white/10 hover:border-cyan-500/40 text-gray-300 hover:text-white px-3 py-2 rounded-xl transition-all text-sm font-semibold"
+            >
+              🎙️ Speak
+            </Link> */}
             <div className="text-right">
               <div className="text-xs text-gray-400">Round {roundCount}</div>
               <div className="text-lg font-bold text-violet-300">{totalXP} XP</div>
@@ -366,6 +415,69 @@ export default function Home() {
         </div>
       </div>
 
+      {/* Topic Mode Selector */}
+      <div className="w-full max-w-2xl mb-6">
+        <div className="bg-white/5 border border-white/10 rounded-2xl p-4">
+          <p className="text-xs text-gray-400 uppercase tracking-widest font-semibold mb-3">Topic</p>
+          {/* Mode tabs */}
+          <div className="flex gap-2 mb-3">
+            {(["random", "category", "custom"] as TopicMode[]).map((m) => (
+              <button
+                key={m}
+                onClick={() => { setTopicMode(m); topicModeRef.current = m; }}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all ${
+                  topicMode === m
+                    ? "bg-violet-500/30 border-violet-500/60 text-violet-300"
+                    : "bg-white/5 border-white/10 text-gray-400 hover:bg-white/10 hover:text-white"
+                }`}
+              >
+                {m === "random" ? "🎲 Random" : m === "category" ? "📂 Category" : "✏️ Custom"}
+              </button>
+            ))}
+          </div>
+
+          {/* Category picker */}
+          {topicMode === "category" && (
+            <div className="flex flex-wrap gap-2">
+              {categories.map((cat) => (
+                <button
+                  key={cat.value}
+                  onClick={() => { setSelectedCategory(cat.value); selectedCategoryRef.current = cat.value; }}
+                  className={`px-3 py-1 rounded-lg text-xs font-semibold border transition-all ${
+                    selectedCategory === cat.value
+                      ? "bg-cyan-500/20 border-cyan-500/50 text-cyan-300"
+                      : "bg-white/5 border-white/10 text-gray-400 hover:bg-white/10 hover:text-white"
+                  }`}
+                >
+                  {cat.label}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Custom input */}
+          {topicMode === "custom" && (
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={customTopicInput}
+                onChange={(e) => { setCustomTopicInput(e.target.value); customTopicInputRef.current = e.target.value; }}
+                onKeyDown={(e) => e.key === "Enter" && customTopicInput.trim() && fetchText(cefrLevel)}
+                placeholder="e.g. how closures work in JavaScript..."
+                className="flex-1 bg-white/5 border border-white/10 rounded-xl px-4 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-violet-500/60 transition-all"
+              />
+              <button
+                onClick={() => fetchText(cefrLevel)}
+                disabled={!customTopicInput.trim() || loadingText}
+                className="bg-violet-600/60 hover:bg-violet-600/80 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-semibold px-4 py-2 rounded-xl transition-all border border-violet-500/40"
+              >
+                Generate
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+
       {/* Text Card */}
       <div className="w-full max-w-2xl mb-6 animate-fade-in">
         <div className="bg-white/5 border border-white/10 rounded-2xl p-6 relative overflow-hidden glow-purple">
@@ -398,21 +510,7 @@ export default function Home() {
               ))}
             </div>
           ) : (
-            <p className="text-gray-100 leading-relaxed text-base leading-8">
-              {text.split(/(\s+)/).map((token, i) =>
-                /\s+/.test(token) ? (
-                  <span key={i}>{token}</span>
-                ) : (
-                  <span
-                    key={i}
-                    onClick={(e) => handleWordClick(token, e)}
-                    className="cursor-pointer hover:text-cyan-300 hover:underline decoration-dotted underline-offset-4 transition-colors rounded px-0.5"
-                  >
-                    {token}
-                  </span>
-                )
-              )}
-            </p>
+            <TextRenderer text={text} onWordClick={handleWordClick} />
           )}
         </div>
       </div>
@@ -507,14 +605,16 @@ export default function Home() {
             {result.correctedText && (
               <div className="mt-4 pt-4 border-t border-white/10">
                 <p className="text-xs text-gray-400 uppercase tracking-widest font-semibold mb-3">✍️ Writing correction</p>
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div className="flex flex-col gap-3">
                   <div className="bg-white/5 rounded-xl p-3">
                     <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Your answer</p>
-                    <p className="text-gray-300 text-sm leading-relaxed">{explanation}</p>
+                    <p className="text-gray-300 text-sm leading-relaxed break-words">{explanation}</p>
                   </div>
                   <div className="bg-emerald-500/5 border border-emerald-500/20 rounded-xl p-3">
                     <p className="text-[10px] text-emerald-500 uppercase tracking-wider mb-2">Corrected</p>
-                    <DiffText original={explanation} corrected={result.correctedText} />
+                    <div className="text-sm leading-relaxed break-words">
+                      <DiffText original={explanation} corrected={result.correctedText} />
+                    </div>
                   </div>
                 </div>
               </div>
@@ -540,12 +640,26 @@ export default function Home() {
         >
           <div className="bg-[#1e1e30] border border-violet-500/40 rounded-xl shadow-2xl px-4 py-3 min-w-[140px] max-w-[220px]">
             <div className="flex items-center justify-between gap-3 mb-1">
-              <span className="text-white font-bold text-sm">{tooltip.word}</span>
-              {tooltip.partOfSpeech && (
-                <span className="text-[10px] text-violet-400 bg-violet-500/20 rounded-full px-2 py-0.5 shrink-0">
-                  {tooltip.partOfSpeech}
-                </span>
-              )}
+              <div>
+                <span className="text-white font-bold text-sm">{tooltip.word}</span>
+                {tooltip.expression && tooltip.expression !== tooltip.word && (
+                  <div className="text-[10px] text-cyan-400 mt-0.5">🔗 "{tooltip.expression}"</div>
+                )}
+              </div>
+              <div className="flex items-center gap-1.5">
+                {tooltip.partOfSpeech && (
+                  <span className="text-[10px] text-violet-400 bg-violet-500/20 rounded-full px-2 py-0.5 shrink-0">
+                    {tooltip.partOfSpeech}
+                  </span>
+                )}
+                <button
+                  onClick={() => speak(tooltip.word)}
+                  className="text-gray-400 hover:text-white transition-colors text-base leading-none"
+                  title="Play pronunciation"
+                >
+                  🔊
+                </button>
+              </div>
             </div>
             {tooltip.phonetic && (
               <div className="text-gray-400 text-xs mb-1">{tooltip.phonetic}</div>

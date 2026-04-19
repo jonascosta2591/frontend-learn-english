@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 import FlashcardModal from "../components/FlashcardModal";
+import { useTTS } from "../hooks/useTTS";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001/api";
 
@@ -82,6 +83,7 @@ function DiffText({ original, corrected }: { original: string; corrected: string
 }
 
 export default function DialoguePage() {
+  const { speak } = useTTS();
   const [cefrLevel, setCefrLevel] = useState<CEFRLevel>("B1");
   const [dialogue, setDialogue] = useState<Dialogue | null>(null);
   const [loading, setLoading] = useState(false);
@@ -93,6 +95,8 @@ export default function DialoguePage() {
   const [sessionXP, setSessionXP] = useState(0);
   const [showFlashcards, setShowFlashcards] = useState(false);
   const [dueCount, setDueCount] = useState(0);
+  // line index → { translation, loading }
+  const [lineTranslations, setLineTranslations] = useState<Record<number, { text: string; loading: boolean }>>({});
   const bottomRef = useRef<HTMLDivElement>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
   const [tooltip, setTooltip] = useState<WordTooltip | null>(null);
@@ -139,6 +143,8 @@ export default function DialoguePage() {
 
     setTooltip({ word: clean, translation: "", loading: true, saved: false, saving: false, x, y });
 
+    speak(clean);
+
     try {
       // translate only, do NOT save to DB yet
       const res = await fetch(`${API}/translate`, {
@@ -174,6 +180,21 @@ export default function DialoguePage() {
     }
   };
 
+  const translateLine = useCallback(async (idx: number, text: string) => {
+    setLineTranslations(prev => ({ ...prev, [idx]: { text: "", loading: true } }));
+    try {
+      const res = await fetch(`${API}/translate-sentence`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sentence: text }),
+      });
+      const data = await res.json();
+      setLineTranslations(prev => ({ ...prev, [idx]: { text: data.translation, loading: false } }));
+    } catch {
+      setLineTranslations(prev => ({ ...prev, [idx]: { text: "Erro ao traduzir", loading: false } }));
+    }
+  }, []);
+
   const generateDialogue = useCallback(async (level?: CEFRLevel) => {
     setLoading(true);
     setDialogue(null);
@@ -181,6 +202,7 @@ export default function DialoguePage() {
     setResult(null);
     setSummary("");
     setIsRevealing(false);
+    setLineTranslations({});
     try {
       const res = await fetch(`${API}/dialogue/generate?level=${level ?? cefrLevel}`);
       const data: Dialogue = await res.json();
@@ -395,6 +417,26 @@ export default function DialoguePage() {
                           )
                         )}
                       </div>
+                      {/* Translate line */}
+                      {!lineTranslations[idx] && (
+                        <button
+                          onClick={() => translateLine(idx, line.text)}
+                          className={`text-[10px] text-gray-500 hover:text-violet-400 transition-colors px-1 ${isRight ? "self-end" : "self-start"}`}
+                        >
+                          🌐 Traduzir
+                        </button>
+                      )}
+                      {lineTranslations[idx]?.loading && (
+                        <div className={`flex items-center gap-1 text-[10px] text-gray-500 px-1 ${isRight ? "self-end" : "self-start"}`}>
+                          <span className="w-2.5 h-2.5 border border-violet-400/30 border-t-violet-400 rounded-full animate-spin" />
+                          Traduzindo...
+                        </div>
+                      )}
+                      {lineTranslations[idx] && !lineTranslations[idx].loading && (
+                        <p className={`text-[11px] text-gray-400 italic px-1 animate-fade-in ${isRight ? "text-right" : "text-left"}`}>
+                          {lineTranslations[idx].text}
+                        </p>
+                      )}
                     </div>
                   </div>
                 );
@@ -498,14 +540,16 @@ export default function DialoguePage() {
             {result.correctedText && (
               <div className="pt-4 border-t border-white/10">
                 <p className="text-xs text-gray-400 uppercase tracking-widest font-semibold mb-3">✍️ Writing correction</p>
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                  <div className="bg-white/5 rounded-xl p-3">
+                <div className="flex flex-col gap-3">
+                  <div className="bg-white/5 rounded-xl p-3 min-w-0">
                     <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Your summary</p>
-                    <p className="text-gray-300 text-sm leading-relaxed">{summary}</p>
+                    <p className="text-gray-300 text-sm leading-relaxed break-words">{summary}</p>
                   </div>
-                  <div className="bg-emerald-500/5 border border-emerald-500/20 rounded-xl p-3">
+                  <div className="bg-emerald-500/5 border border-emerald-500/20 rounded-xl p-3 min-w-0">
                     <p className="text-[10px] text-emerald-500 uppercase tracking-wider mb-2">Corrected</p>
-                    <DiffText original={summary} corrected={result.correctedText} />
+                    <div className="text-sm leading-relaxed break-words">
+                      <DiffText original={summary} corrected={result.correctedText} />
+                    </div>
                   </div>
                 </div>
               </div>
@@ -531,11 +575,20 @@ export default function DialoguePage() {
           <div className="bg-[#1e1e30] border border-violet-500/40 rounded-xl shadow-2xl px-4 py-3 min-w-[160px] max-w-[230px]">
             <div className="flex items-center justify-between gap-3 mb-1">
               <span className="text-white font-bold text-sm">{tooltip.word}</span>
-              {tooltip.partOfSpeech && (
-                <span className="text-[10px] text-violet-400 bg-violet-500/20 rounded-full px-2 py-0.5 shrink-0">
-                  {tooltip.partOfSpeech}
-                </span>
-              )}
+              <div className="flex items-center gap-1.5">
+                {tooltip.partOfSpeech && (
+                  <span className="text-[10px] text-violet-400 bg-violet-500/20 rounded-full px-2 py-0.5 shrink-0">
+                    {tooltip.partOfSpeech}
+                  </span>
+                )}
+                <button
+                  onClick={() => speak(tooltip.word)}
+                  className="text-gray-400 hover:text-white transition-colors text-base leading-none"
+                  title="Play pronunciation"
+                >
+                  🔊
+                </button>
+              </div>
             </div>
             {tooltip.phonetic && <div className="text-gray-400 text-xs mb-1">{tooltip.phonetic}</div>}
             {tooltip.loading ? (

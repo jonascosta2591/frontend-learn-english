@@ -1,6 +1,8 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
+import { useTTS } from "../hooks/useTTS";
+import { useAuth } from "../context/AuthContext";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001/api";
 const AGAIN_DELAY_MS = 60_000;
@@ -33,6 +35,8 @@ const qualityLabels = [
 ];
 
 export default function SentenceFlashcardModal({ onClose }: Props) {
+  const { speak } = useTTS();
+  const { authFetch } = useAuth();
   const [queue, setQueue] = useState<SentenceCard[]>([]);
   const [pending, setPending] = useState<PendingCard[]>([]);
   const [revealed, setRevealed] = useState(false);
@@ -74,7 +78,7 @@ export default function SentenceFlashcardModal({ onClose }: Props) {
   const fetchDue = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch(`${API}/sentences/due`);
+      const res = await authFetch(`${API}/sentences/due`);
       const data: SentenceCard[] = await res.json();
       const seen = new Set<number>();
       const unique = data.filter((c) => seen.has(c.id) ? false : (seen.add(c.id), true));
@@ -88,17 +92,17 @@ export default function SentenceFlashcardModal({ onClose }: Props) {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [authFetch]);
 
   const fetchAll = useCallback(async () => {
     setLoadingAll(true);
     try {
-      const res = await fetch(`${API}/sentences`);
+      const res = await authFetch(`${API}/sentences`);
       setAllCards(await res.json());
     } finally {
       setLoadingAll(false);
     }
-  }, []);
+  }, [authFetch]);
 
   useEffect(() => { fetchDue(); }, [fetchDue]);
   useEffect(() => { if (tab === "all") fetchAll(); }, [tab, fetchAll]);
@@ -117,6 +121,12 @@ export default function SentenceFlashcardModal({ onClose }: Props) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [current?.id]);
 
+  // Speak sentence when card changes
+  useEffect(() => {
+    if (current?.sentence) speak(current.sentence);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [current?.id]);
+
   // Done check
   useEffect(() => {
     if (!loading && queue.length === 0 && pending.length === 0 && total > 0) setDone(true);
@@ -128,7 +138,7 @@ export default function SentenceFlashcardModal({ onClose }: Props) {
     const remaining = queue.slice(1);
 
     if (quality >= 3) {
-      await fetch(`${API}/sentences/${card.id}/review`, {
+      await authFetch(`${API}/sentences/${card.id}/review`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ quality }),
@@ -243,9 +253,18 @@ export default function SentenceFlashcardModal({ onClose }: Props) {
                     <p className="text-white text-base leading-relaxed">
                       {highlightWord(current.sentence, current.word)}
                     </p>
-                    <span className="text-xs bg-violet-500/20 text-violet-300 border border-violet-500/30 rounded-full px-2 py-0.5 mt-3">
-                      word: {current.word}
-                    </span>
+                    <div className="flex items-center gap-2 mt-3">
+                      <span className="text-xs bg-violet-500/20 text-violet-300 border border-violet-500/30 rounded-full px-2 py-0.5">
+                        word: {current.word}
+                      </span>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); speak(current.sentence); }}
+                        className="text-gray-400 hover:text-white transition-colors text-base leading-none"
+                        title="Play pronunciation"
+                      >
+                        🔊
+                      </button>
+                    </div>
 
                     {!revealed ? (
                       <p className="text-gray-500 text-sm mt-5">Clique para revelar a tradução</p>

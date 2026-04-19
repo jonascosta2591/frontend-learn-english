@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
+import { useAuth } from "../context/AuthContext";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001/api";
 const AGAIN_DELAY_MS = 60_000; // 1 minute
@@ -35,6 +36,7 @@ const qualityLabels = [
 ];
 
 export default function FlashcardModal({ onClose, onXPEarned }: Props) {
+  const { authFetch } = useAuth();
   const [dueWords, setDueWords] = useState<Word[]>([]);
   const [pendingWords, setPendingWords] = useState<PendingWord[]>([]);
   const [current, setCurrent] = useState(0);
@@ -84,9 +86,8 @@ export default function FlashcardModal({ onClose, onXPEarned }: Props) {
   const fetchDue = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch(`${API}/words/due`);
+      const res = await authFetch(`${API}/words/due`);
       const data = await res.json();
-      // Deduplicate by id just in case
       const seen = new Set<number>();
       const unique = data.filter((w: Word) => seen.has(w.id) ? false : (seen.add(w.id), true));
       setDueWords(unique);
@@ -99,17 +100,17 @@ export default function FlashcardModal({ onClose, onXPEarned }: Props) {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [authFetch]);
 
   const fetchAll = useCallback(async () => {
     setLoadingAll(true);
     try {
-      const res = await fetch(`${API}/words`);
+      const res = await authFetch(`${API}/words`);
       setAllWords(await res.json());
     } finally {
       setLoadingAll(false);
     }
-  }, []);
+  }, [authFetch]);
 
   useEffect(() => { fetchDue(); }, [fetchDue]);
   useEffect(() => { if (tab === "all") fetchAll(); }, [tab, fetchAll]);
@@ -142,7 +143,7 @@ export default function FlashcardModal({ onClose, onXPEarned }: Props) {
 
     // Only persist to DB when passing — Again is session-only
     if (quality >= 3) {
-      await fetch(`${API}/words/${word.id}/review`, {
+      await authFetch(`${API}/words/${word.id}/review`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ quality }),
@@ -219,34 +220,45 @@ export default function FlashcardModal({ onClose, onXPEarned }: Props) {
                     <p className="text-violet-400 font-semibold mt-3">+{sessionXP} XP ganhos</p>
                   )}
                 </div>
-              ) : dueWords.length === 0 && pendingWords.length > 0 ? (
-                /* Waiting screen */
+              ) : !currentWord ? (
                 <div className="text-center py-12">
-                  <div className="text-5xl mb-4">⏳</div>
-                  <p className="text-white font-bold text-lg">Aguardando...</p>
-                  <p className="text-gray-400 text-sm mt-1">
-                    {pendingWords.length} palavra{pendingWords.length > 1 ? "s" : ""} voltando em breve.
-                  </p>
-                  <div className="mt-4 inline-flex items-center gap-2 bg-red-500/10 border border-red-500/30 rounded-full px-4 py-2">
-                    <span className="w-2 h-2 bg-red-400 rounded-full animate-pulse" />
-                    <span className="text-red-300 font-mono font-bold text-lg">
-                      {String(Math.floor((nextReadyIn ?? 0) / 60)).padStart(2, "0")}:
-                      {String((nextReadyIn ?? 0) % 60).padStart(2, "0")}
-                    </span>
-                  </div>
-                  <div className="mt-4 space-y-2">
-                    {pendingWords.map((p) => {
-                      const secs = Math.max(0, Math.ceil((p.readyAt - now) / 1000));
-                      return (
-                        <div key={p.word.id} className="flex items-center justify-between bg-white/5 rounded-xl px-4 py-2 text-sm">
-                          <span className="text-white font-semibold">{p.word.word}</span>
-                          <span className="text-gray-400 font-mono text-xs">
-                            {String(Math.floor(secs / 60)).padStart(2, "0")}:{String(secs % 60).padStart(2, "0")}
-                          </span>
-                        </div>
-                      );
-                    })}
-                  </div>
+                  {pendingWords.length > 0 ? (
+                    <>
+                      <div className="text-5xl mb-4">⏳</div>
+                      <p className="text-white font-bold text-lg">Aguardando...</p>
+                      <p className="text-gray-400 text-sm mt-1">
+                        {pendingWords.length} palavra{pendingWords.length > 1 ? "s" : ""} voltando em breve.
+                      </p>
+                      <div className="mt-4 inline-flex items-center gap-2 bg-red-500/10 border border-red-500/30 rounded-full px-4 py-2">
+                        <span className="w-2 h-2 bg-red-400 rounded-full animate-pulse" />
+                        <span className="text-red-300 font-mono font-bold text-lg">
+                          {String(Math.floor((nextReadyIn ?? 0) / 60)).padStart(2, "0")}:
+                          {String((nextReadyIn ?? 0) % 60).padStart(2, "0")}
+                        </span>
+                      </div>
+                      <div className="mt-4 space-y-2">
+                        {pendingWords.map((p) => {
+                          const secs = Math.max(0, Math.ceil((p.readyAt - now) / 1000));
+                          return (
+                            <div key={p.word.id} className="flex items-center justify-between bg-white/5 rounded-xl px-4 py-2 text-sm">
+                              <span className="text-white font-semibold">{p.word.word}</span>
+                              <span className="text-gray-400 font-mono text-xs">
+                                {String(Math.floor(secs / 60)).padStart(2, "0")}:{String(secs % 60).padStart(2, "0")}
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="text-5xl mb-4">🎉</div>
+                      <p className="text-white font-bold text-lg">Tudo revisado!</p>
+                      {sessionXP > 0 && (
+                        <p className="text-violet-300 text-sm mt-2">+{sessionXP} XP ganhos</p>
+                      )}
+                    </>
+                  )}
                 </div>
               ) : (
                 <>

@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import SentenceFlashcardModal from "../components/SentenceFlashcardModal";
+import { useAuth } from "../context/AuthContext";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001/api";
 
@@ -41,6 +42,7 @@ const levelConfig: Record<CEFRLevel, { color: string; bg: string; border: string
 };
 
 export default function SentencesPage() {
+  const { authFetch } = useAuth();
   const [level, setLevel] = useState<CEFRLevel>("B1");
   const [words, setWords] = useState<Word[]>([]);
   const [wordSearch, setWordSearch] = useState("");
@@ -54,37 +56,39 @@ export default function SentencesPage() {
   const [loadingSaved, setLoadingSaved] = useState(false);
   const [showFlashcards, setShowFlashcards] = useState(false);
   const [dueCount, setDueCount] = useState(0);
+  const [wordInputMode, setWordInputMode] = useState<"flashcards" | "manual">("flashcards");
+  const [manualWord, setManualWord] = useState("");
 
   const fetchDueCount = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/sentences/due`);
+      const res = await authFetch(`${API}/sentences/due`);
       const data = await res.json();
       setDueCount(Array.isArray(data) ? data.length : 0);
     } catch { /* ignore */ }
-  }, []);
+  }, [authFetch]);
 
   const fetchWords = useCallback(async () => {
     try {
       const [wordsRes, sentencesRes] = await Promise.all([
-        fetch(`${API}/words`),
-        fetch(`${API}/sentences`),
+        authFetch(`${API}/words`),
+        authFetch(`${API}/sentences`),
       ]);
       const allWords: Word[] = await wordsRes.json();
       const allSentences: { word: string }[] = await sentencesRes.json();
       const usedWords = new Set(allSentences.map(s => s.word.toLowerCase()));
       setWords(allWords.filter(w => !usedWords.has(w.word.toLowerCase())));
     } catch { /* ignore */ }
-  }, []);
+  }, [authFetch]);
 
   const fetchSaved = useCallback(async () => {
     setLoadingSaved(true);
     try {
-      const res = await fetch(`${API}/sentences`);
+      const res = await authFetch(`${API}/sentences`);
       setSavedSentences(await res.json());
     } finally {
       setLoadingSaved(false);
     }
-  }, []);
+  }, [authFetch]);
 
   useEffect(() => { fetchWords(); }, [fetchWords]);
   useEffect(() => { if (tab === "saved") fetchSaved(); }, [tab, fetchSaved]);
@@ -96,7 +100,7 @@ export default function SentencesPage() {
     setSentences([]);
     setSavedIds(new Set());
     try {
-      const res = await fetch(`${API}/sentences/generate`, {
+      const res = await authFetch(`${API}/sentences/generate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ word: selectedWord.word, translation: selectedWord.translation, level }),
@@ -117,7 +121,7 @@ export default function SentencesPage() {
     if (!selectedWord || savedIds.has(idx)) return;
     setSavingIdx(idx);
     try {
-      await fetch(`${API}/sentences/save`, {
+      await authFetch(`${API}/sentences/save`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sentence: s.sentence, translation: s.translation, word: selectedWord.word, level }),
@@ -222,43 +226,93 @@ export default function SentencesPage() {
           {/* Word picker */}
           <div className="w-full max-w-2xl mb-6">
             <div className="bg-white/5 border border-white/10 rounded-2xl p-4">
-              <p className="text-xs text-gray-400 uppercase tracking-widest font-semibold mb-3">
-                Choose a word from your flashcards
-              </p>
+              {/* Mode toggle */}
+              <div className="flex bg-white/5 border border-white/10 rounded-xl overflow-hidden mb-4">
+                <button
+                  onClick={() => { setWordInputMode("flashcards"); setSentences([]); setSavedIds(new Set()); }}
+                  className={`flex-1 py-2 text-xs font-semibold transition-colors ${wordInputMode === "flashcards" ? "bg-violet-600/30 text-violet-300" : "text-gray-400 hover:text-white"}`}
+                >
+                  🃏 From flashcards
+                </button>
+                <button
+                  onClick={() => { setWordInputMode("manual"); setSelectedWord(null); setSentences([]); setSavedIds(new Set()); }}
+                  className={`flex-1 py-2 text-xs font-semibold transition-colors ${wordInputMode === "manual" ? "bg-violet-600/30 text-violet-300" : "text-gray-400 hover:text-white"}`}
+                >
+                  ✏️ Type a word
+                </button>
+              </div>
 
-              {words.length === 0 ? (
-                <p className="text-gray-500 text-sm text-center py-4">
-                  No words yet. Translate words in the Reading or Dialogue pages first.
-                </p>
+              {wordInputMode === "flashcards" ? (
+                words.length === 0 ? (
+                  <p className="text-gray-500 text-sm text-center py-4">
+                    No words yet. Translate words in the Reading or Dialogue pages first.
+                  </p>
+                ) : (
+                  <>
+                    <input
+                      type="text"
+                      value={wordSearch}
+                      onChange={e => setWordSearch(e.target.value)}
+                      placeholder="Search words..."
+                      className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-violet-500/60 transition-all mb-3"
+                    />
+                    <div className="flex flex-wrap gap-2 max-h-48 overflow-y-auto pr-1">
+                      {filtered.map(w => {
+                        const active = selectedWord?.id === w.id;
+                        return (
+                          <button
+                            key={w.id}
+                            onClick={() => { setSelectedWord(w); setSentences([]); setSavedIds(new Set()); }}
+                            className={`flex items-center gap-2 px-3 py-1.5 rounded-xl border text-sm transition-all ${
+                              active
+                                ? "bg-violet-600/30 border-violet-500/50 text-violet-200"
+                                : "bg-white/5 border-white/10 text-gray-300 hover:bg-white/10 hover:text-white"
+                            }`}
+                          >
+                            <span className="font-semibold">{w.word}</span>
+                            <span className="text-xs text-gray-400">{w.translation}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </>
+                )
               ) : (
-                <>
-                  <input
-                    type="text"
-                    value={wordSearch}
-                    onChange={e => setWordSearch(e.target.value)}
-                    placeholder="Search words..."
-                    className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-violet-500/60 transition-all mb-3"
-                  />
-                  <div className="flex flex-wrap gap-2 max-h-48 overflow-y-auto pr-1">
-                    {filtered.map(w => {
-                      const active = selectedWord?.id === w.id;
-                      return (
-                        <button
-                          key={w.id}
-                          onClick={() => { setSelectedWord(w); setSentences([]); setSavedIds(new Set()); }}
-                          className={`flex items-center gap-2 px-3 py-1.5 rounded-xl border text-sm transition-all ${
-                            active
-                              ? "bg-violet-600/30 border-violet-500/50 text-violet-200"
-                              : "bg-white/5 border-white/10 text-gray-300 hover:bg-white/10 hover:text-white"
-                          }`}
-                        >
-                          <span className="font-semibold">{w.word}</span>
-                          <span className="text-xs text-gray-400">{w.translation}</span>
-                        </button>
-                      );
-                    })}
+                <div className="space-y-2">
+                  <p className="text-xs text-gray-400 mb-2">Enter any English word to generate i+1 sentences:</p>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={manualWord}
+                      onChange={e => { setManualWord(e.target.value); setSentences([]); setSavedIds(new Set()); }}
+                      onKeyDown={e => {
+                        if (e.key === "Enter" && manualWord.trim()) {
+                          setSelectedWord({ id: -1, word: manualWord.trim(), translation: "" });
+                        }
+                      }}
+                      placeholder="e.g. perseverance, ambiguous, threshold..."
+                      className="flex-1 bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-violet-500/60 transition-all"
+                    />
+                    <button
+                      onClick={() => {
+                        if (manualWord.trim()) {
+                          setSelectedWord({ id: -1, word: manualWord.trim(), translation: "" });
+                          setSentences([]);
+                          setSavedIds(new Set());
+                        }
+                      }}
+                      disabled={!manualWord.trim()}
+                      className="bg-violet-600 hover:bg-violet-500 disabled:opacity-40 text-white font-semibold px-4 py-2.5 rounded-xl text-sm transition-all"
+                    >
+                      Use
+                    </button>
                   </div>
-                </>
+                  {selectedWord?.id === -1 && (
+                    <p className="text-xs text-violet-400">
+                      Selected: <span className="font-semibold">{selectedWord.word}</span>
+                    </p>
+                  )}
+                </div>
               )}
             </div>
           </div>

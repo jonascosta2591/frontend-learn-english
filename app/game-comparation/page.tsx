@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 import { Word, Tile, isPair, formatTime, shuffle } from "./gameLogic";
+import { useAuth } from "../context/AuthContext";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001/api";
 const RECORD_KEY = "game-comparation-record";
@@ -37,6 +38,7 @@ function insertAtRandom(existing: Tile[], newTiles: Tile[]): Tile[] {
 }
 
 export default function GameComparationPage() {
+  const { authFetch } = useAuth();
   const [phase, setPhase] = useState<Phase>("loading");
   const [errorMsg, setErrorMsg] = useState("");
   const [tiles, setTiles] = useState<Tile[]>([]);
@@ -66,7 +68,7 @@ export default function GameComparationPage() {
     setPhase("loading");
     setErrorMsg("");
     try {
-      const res = await fetch(`${API}/words`);
+      const res = await authFetch(`${API}/words`);
       const data: Word[] = await res.json();
       if (!Array.isArray(data) || data.length < 6) {
         setErrorMsg("Not enough words. Translate at least 6 words first.");
