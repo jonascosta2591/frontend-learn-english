@@ -68,7 +68,7 @@ function renderTextWithWords(text: string, onWordClick: (w: string, e: React.Mou
 }
 
 export default function TextRenderer({ text, onWordClick }: TextRendererProps) {
-  const segments = parseSegments(text);
+  const segments = parseSegments(text ?? "");
 
   return (
     <div className="space-y-4">
